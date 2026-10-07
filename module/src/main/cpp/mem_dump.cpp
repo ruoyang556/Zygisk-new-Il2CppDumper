@@ -106,7 +106,7 @@ static bool offsets_are_sane(std::vector<LoadSegment> segs) {
     return true;
 }
 
-bool dump_libil2cpp(const std::string &path) {
+bool dump_libil2cpp(const std::string &path, DumpInfo *dumpInfo) {
     auto handle = xdl_open("libil2cpp.so", XDL_DEFAULT);
     if (!handle) {
         LOGE("libil2cpp.so not loaded, skip so dump");
@@ -203,6 +203,10 @@ bool dump_libil2cpp(const std::string &path) {
         LOGE("dump %s failed: %s", path.c_str(), strerror(errno));
         unlink(path.c_str());
         return false;
+    }
+    if (dumpInfo) {
+        dumpInfo->soBase = base;
+        dumpInfo->soSize = written;
     }
     LOGI("dump libil2cpp.so ok: %s (%zu bytes, %d segments%s, base %p)", path.c_str(), written,
          static_cast<int>(segs.size()), byVaddr ? ", vaddr layout" : "",
@@ -485,7 +489,7 @@ static bool stream_to_file(const MemReader &reader, const std::string &path, uin
 
 // 写出 metadata；如果魔数被改过会顺手改回标准值方便工具读取
 static bool emit_metadata(const MemReader &reader, const std::string &path, uintptr_t addr,
-                          const HeaderInfo &info) {
+                          const HeaderInfo &info, DumpInfo *out) {
     uint8_t patch[4];
     const uint8_t *patchPtr = nullptr;
     if (info.sanity != kMetadataMagic) {
@@ -496,6 +500,13 @@ static bool emit_metadata(const MemReader &reader, const std::string &path, uint
     if (!stream_to_file(reader, path, addr, info.size, patchPtr)) {
         return false;
     }
+    if (out) {
+        out->metadataAddr = addr;
+        out->metadataSize = info.size;
+        out->metadataVersion = info.version;
+        out->metadataMagic = info.sanity;
+        out->metadataStructural = info.structural ? 1 : 0;
+    }
     LOGI("dump global-metadata.dat ok: %s (v%d, %zu bytes, addr 0x%" PRIxPTR ", magic 0x%08x%s)",
          path.c_str(), info.version, info.size, addr, info.sanity,
          info.structural ? ", structural match" : "");
@@ -505,7 +516,7 @@ static bool emit_metadata(const MemReader &reader, const std::string &path, uint
     return true;
 }
 
-bool dump_global_metadata(const std::string &path, const std::vector<uintptr_t> &hints) {
+bool dump_global_metadata(const std::string &path, const std::vector<uintptr_t> &hints, DumpInfo *out) {
     std::vector<MemRegion> regions;
     if (!collect_regions(regions)) {
         return false;
@@ -539,7 +550,7 @@ bool dump_global_metadata(const std::string &path, const std::vector<uintptr_t> 
                 break;
             }
             if (inspect_header(reader, hit, r.end, true, &info)) {
-                return emit_metadata(reader, path, hit, info);
+                return emit_metadata(reader, path, hit, info, out);
             }
             cur = hit + 4;
         }
@@ -579,7 +590,7 @@ bool dump_global_metadata(const std::string &path, const std::vector<uintptr_t> 
                 break;
             }
             if (inspect_header(reader, hit, home->end, true, &info)) {
-                return emit_metadata(reader, path, hit, info);
+                return emit_metadata(reader, path, hit, info, out);
             }
             hitCur = hit + 4;
         }
@@ -593,7 +604,7 @@ bool dump_global_metadata(const std::string &path, const std::vector<uintptr_t> 
         size_t steps = 0;
         for (; page > lower && steps < (kMaxBackSearch / 0x1000); page -= 0x1000, ++steps) {
             if (inspect_header(reader, page, home->end, false, &info)) {
-                return emit_metadata(reader, path, page, info);
+                return emit_metadata(reader, path, page, info, out);
             }
         }
         LOGW("hint 0x%" PRIxPTR ": no header found in %zu pages", hint, steps);
@@ -607,11 +618,40 @@ bool dump_global_metadata(const std::string &path, const std::vector<uintptr_t> 
         LOGW("fallback: mapping %s 0x%" PRIxPTR "-0x%" PRIxPTR, r.path.c_str(), r.start, r.end);
         HeaderInfo fallback{};
         fallback.size = static_cast<size_t>(r.end - r.start);
-        if (emit_metadata(reader, path, r.start, fallback)) {
+        if (emit_metadata(reader, path, r.start, fallback, out)) {
             return true;
         }
     }
 
     LOGE("global-metadata.dat not found in memory");
     return false;
+}
+
+void write_dump_info(const std::string &dir, const DumpInfo &info) {
+    if (dir.empty()) {
+        return;
+    }
+    auto path = dir + "/dump_info.txt";
+    auto fd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) {
+        LOGE("write %s failed: %s", path.c_str(), strerror(errno));
+        return;
+    }
+    char buf[1024];
+    int n = snprintf(buf, sizeof(buf),
+                     "so_base=0x%" PRIxPTR "\n"
+                     "so_size=%zu\n"
+                     "metadata_addr=0x%" PRIxPTR "\n"
+                     "metadata_size=%zu\n"
+                     "metadata_version=%d\n"
+                     "metadata_magic=0x%08x\n"
+                     "metadata_structural_match=%d\n"
+                     "dump_dir=%s\n",
+                     info.soBase, info.soSize, info.metadataAddr, info.metadataSize,
+                     info.metadataVersion, info.metadataMagic, info.metadataStructural, dir.c_str());
+    if (n > 0) {
+        write_all(fd, buf, static_cast<size_t>(n));
+    }
+    close(fd);
+    LOGI("dump info written: %s", path.c_str());
 }

@@ -381,7 +381,8 @@ void il2cpp_dump(const char *outDir) {
     }
     // 阶段 1/3：内存里的 libil2cpp.so
     LOGI("stage 1/3: dump libil2cpp.so");
-    dump_libil2cpp(dumpDir + "/libil2cpp.so");
+    DumpInfo dumpInfo{};
+    dump_libil2cpp(dumpDir + "/libil2cpp.so", &dumpInfo);
 
     size_t size;
     auto domain = il2cpp_domain_get();
@@ -488,6 +489,7 @@ void il2cpp_dump(const char *outDir) {
         }
     }
     LOGI("metadata hints: %zu", hints.size());
-    dump_global_metadata(dumpDir + "/global-metadata.dat", hints);
+    dump_global_metadata(dumpDir + "/global-metadata.dat", hints, &dumpInfo);
+    write_dump_info(dumpDir, dumpInfo);
     LOGI("all stages done");
 }
