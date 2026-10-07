@@ -1,0 +1,127 @@
+import org.apache.tools.ant.filters.FixCrLfFilter
+
+import com.android.build.api.artifact.SingleArtifact
+
+import java.nio.file.Paths
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+
+apply plugin: 'com.android.library'
+apply from: file(rootProject.file('module.gradle'))
+
+android {
+    namespace = 'zygisk.il2cppdumper'
+    compileSdk = rootProject.ext.compileSdkVersion
+    ndkVersion = rootProject.ext.ndkVersion
+
+    defaultConfig {
+        minSdk = rootProject.ext.minSdkVersion
+        externalNativeBuild {
+            cmake {
+                arguments "-DMODULE_NAME:STRING=$moduleLibraryName"
+            }
+        }
+    }
+    buildFeatures {
+        prefab = true
+    }
+    externalNativeBuild {
+        cmake {
+            path = "src/main/cpp/CMakeLists.txt"
+            version = rootProject.ext.cmakeVersion
+        }
+    }
+}
+
+repositories {
+    mavenLocal()
+}
+
+def outDir = rootProject.ext.outDir
+
+// AGP 9 已移除旧的 android.libraryVariants，改用 androidComponents 的 Variant API
+androidComponents {
+    onVariants(selector().all()) { variant ->
+        def variantCapped = variant.name.capitalize()
+        def variantLowered = variant.name.toLowerCase()
+
+        def zipName = "${magiskModuleId.replace('_', '-')}-${moduleVersion}-${variantLowered}.zip"
+        def magiskDir = new File(outDir, "magisk_module_$variantLowered")
+
+        // 通过官方构件 API 获取合并后的原生库目录（任务依赖自动建立）。
+        // 注意：MERGED_NATIVE_LIBS 是 Kotlin object，需取 .INSTANCE
+        def nativeLibs = variant.artifacts.get(SingleArtifact.MERGED_NATIVE_LIBS.INSTANCE)
+
+        def prepareTask = tasks.register("prepareMagiskFiles${variantCapped}", Sync) {
+            def templatePath = "$rootDir/template/magisk_module"
+
+            into magiskDir
+            from(templatePath) {
+                exclude 'module.prop'
+            }
+            from(templatePath) {
+                include 'module.prop'
+                expand([
+                        id         : magiskModuleId,
+                        name       : moduleName,
+                        version    : moduleVersion,
+                        versionCode: moduleVersionCode.toString(),
+                        author     : moduleAuthor,
+                        description: moduleDescription,
+                ])
+                filter(FixCrLfFilter.class,
+                        eol: FixCrLfFilter.CrLf.newInstance("lf"))
+            }
+            from(nativeLibs)
+            doLast {
+                // Magisk 要求 zygisk/<abi>.so，把各 ABI 的动态库搬运并改名
+                def zygiskDir = new File(magiskDir, 'zygisk')
+                def libName = "lib${moduleLibraryName}.so"
+                def moved = 0
+                fileTree(magiskDir).visit { f ->
+                    if (f.directory || f.name != libName) return
+                    def abi = f.file.parentFile.name
+                    if (abi == 'zygisk') return
+                    zygiskDir.mkdirs()
+                    Files.move(f.file.toPath(), Paths.get(zygiskDir.absolutePath, "${abi}.so"),
+                            StandardCopyOption.REPLACE_EXISTING)
+                    moved++
+                }
+                if (moved == 0) {
+                    throw new GradleException("${magiskDir} 下未找到 ${libName}，打包失败")
+                }
+                // 清理搬运后剩下的空目录
+                new File(magiskDir, 'lib').deleteDir()
+            }
+        }
+
+        def zipTask = tasks.register("zip${variantCapped}", Zip) {
+            dependsOn(prepareTask)
+            from magiskDir
+            archiveFileName.set(zipName)
+            destinationDirectory.set(outDir)
+        }
+
+        // 与 AGP 生成的 assemble 任务挂钩
+        tasks.matching { it.name == "assemble${variantCapped}" }.configureEach {
+            finalizedBy(zipTask)
+        }
+
+        tasks.register("push${variantCapped}", Exec) {
+            dependsOn(zipTask)
+            workingDir outDir
+            commandLine android.adbExecutable, "push", zipName, "/data/local/tmp/"
+        }
+
+        tasks.register("flash${variantCapped}", Exec) {
+            dependsOn("push${variantCapped}")
+            commandLine android.adbExecutable, "shell", "su", "-c",
+                    "magisk --install-module /data/local/tmp/${zipName}"
+        }
+
+        tasks.register("flashAndReboot${variantCapped}", Exec) {
+            dependsOn("flash${variantCapped}")
+            commandLine android.adbExecutable, "shell", "reboot"
+        }
+    }
+}

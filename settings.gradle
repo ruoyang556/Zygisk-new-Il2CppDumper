@@ -1,0 +1,13 @@
+import org.apache.tools.ant.DirectoryScanner
+
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+DirectoryScanner.removeDefaultExclude('**/.gitattributes')
+
+include ':module'

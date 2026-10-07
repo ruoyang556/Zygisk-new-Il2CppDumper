@@ -1,0 +1,33 @@
+plugins {
+    id 'idea'
+    id 'com.android.library' version '9.4.1' apply false
+}
+
+idea.module {
+    excludeDirs += file('out')
+    resourceDirs += file('template')
+    resourceDirs += file('scripts')
+}
+
+allprojects {
+    repositories {
+        mavenCentral()
+        google()
+    }
+}
+
+ext {
+    minSdkVersion = 23
+    compileSdkVersion = 36
+    // NDK r28c
+    ndkVersion = '28.2.13676358'
+    // AGP 支持的最低 CMake 版本，缺失时由 SDK 自动安装
+    cmakeVersion = '3.22.1'
+
+    outDir = file("$rootDir/out")
+}
+
+tasks.register('clean', Delete) {
+    delete rootProject.layout.buildDirectory.get().asFile, outDir
+    subprojects.each { p -> delete p.layout.buildDirectory.get().asFile }
+}
