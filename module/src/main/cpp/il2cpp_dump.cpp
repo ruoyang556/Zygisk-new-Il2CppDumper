@@ -12,6 +12,8 @@
 #include <sstream>
 #include <fstream>
 #include <unistd.h>
+#include <sys/stat.h>
+#include <cerrno>
 #include "xdl.h"
 #include "log.h"
 #include "il2cpp-tabledefs.h"
@@ -343,8 +345,47 @@ void il2cpp_api_init(void *handle) {
     il2cpp_thread_attach(domain);
 }
 
+// 逐级创建目录（等价于 mkdir -p）
+static void make_dirs(const std::string &path) {
+    if (path.empty()) return;
+    std::string cur;
+    for (char c: path) {
+        cur += c;
+        if (c == '/' && cur.size() > 1) {
+            mkdir(cur.c_str(), 0755);
+        }
+    }
+    mkdir(path.c_str(), 0755);
+}
+
+// 把 dump 内容写入指定文件，成功返回 true
+static bool write_dump_file(const std::string &path,
+                            const std::string &imageOutput,
+                            const std::vector<std::string> &outPuts) {
+    auto pos = path.rfind('/');
+    if (pos != std::string::npos) {
+        make_dirs(path.substr(0, pos));
+    }
+    std::ofstream outStream(path);
+    if (!outStream.is_open()) {
+        LOGE("open %s failed: %s", path.c_str(), strerror(errno));
+        return false;
+    }
+    outStream << imageOutput;
+    for (const auto &it: outPuts) {
+        outStream << it;
+    }
+    outStream.flush();
+    outStream.close();
+    if (outStream.fail()) {
+        LOGE("write %s failed: %s", path.c_str(), strerror(errno));
+        return false;
+    }
+    return true;
+}
+
 void il2cpp_dump(const char *outDir) {
-    LOGI("dumping...");
+    LOGI("dumping... data dir: %s", outDir);
     size_t size;
     auto domain = il2cpp_domain_get();
     auto assemblies = il2cpp_domain_get_assemblies(domain, &size);
@@ -417,13 +458,23 @@ void il2cpp_dump(const char *outDir) {
         }
     }
     LOGI("write dump file");
-    auto outPath = std::string(outDir).append("/files/dump.cs");
-    std::ofstream outStream(outPath);
-    outStream << imageOutput.str();
-    auto count = outPuts.size();
-    for (int i = 0; i < count; ++i) {
-        outStream << outPuts[i];
+    // 依次尝试：应用私有 files 目录 → 应用私有数据目录 → 外部存储的应用专属目录。
+    // 很多游戏的数据目录下并没有 files 子目录，原来的代码会静默写入失败。
+    std::vector<std::string> candidates;
+    candidates.emplace_back(std::string(outDir) + "/files/dump.cs");
+    candidates.emplace_back(std::string(outDir) + "/dump.cs");
+    auto pkg = std::string(outDir);
+    auto slash = pkg.rfind('/');
+    if (slash != std::string::npos && slash + 1 < pkg.size()) {
+        pkg = pkg.substr(slash + 1);
+        candidates.emplace_back("/sdcard/Android/data/" + pkg + "/files/dump.cs");
     }
-    outStream.close();
-    LOGI("dump done!");
+    for (const auto &path: candidates) {
+        if (write_dump_file(path, imageOutput.str(), outPuts)) {
+            LOGI("dump done! %s", path.c_str());
+            return;
+        }
+        LOGW("try next output path...");
+    }
+    LOGE("dump failed: no writable output path");
 }
