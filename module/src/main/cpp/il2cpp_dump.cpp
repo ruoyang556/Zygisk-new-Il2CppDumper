@@ -16,6 +16,7 @@
 #include <cerrno>
 #include "xdl.h"
 #include "log.h"
+#include "mem_dump.h"
 #include "il2cpp-tabledefs.h"
 #include "il2cpp-class.h"
 
@@ -345,19 +346,6 @@ void il2cpp_api_init(void *handle) {
     il2cpp_thread_attach(domain);
 }
 
-// 逐级创建目录（等价于 mkdir -p）
-static void make_dirs(const std::string &path) {
-    if (path.empty()) return;
-    std::string cur;
-    for (char c: path) {
-        cur += c;
-        if (c == '/' && cur.size() > 1) {
-            mkdir(cur.c_str(), 0755);
-        }
-    }
-    mkdir(path.c_str(), 0755);
-}
-
 // 把 dump 内容写入指定文件，成功返回 true
 static bool write_dump_file(const std::string &path,
                             const std::string &imageOutput,
@@ -386,6 +374,14 @@ static bool write_dump_file(const std::string &path,
 
 void il2cpp_dump(const char *outDir) {
     LOGI("dumping... data dir: %s", outDir);
+    auto dumpDir = pick_writable_dir(outDir);
+    if (dumpDir.empty()) {
+        LOGE("no writable output dir, abort");
+        return;
+    }
+    // 先把内存里的 so 与 metadata 落地：即使后面 dump.cs 失败，这两个文件也已经拿到了
+    dump_libil2cpp(dumpDir + "/libil2cpp.so");
+    dump_global_metadata(dumpDir + "/global-metadata.dat");
     size_t size;
     auto domain = il2cpp_domain_get();
     auto assemblies = il2cpp_domain_get_assemblies(domain, &size);
@@ -458,23 +454,10 @@ void il2cpp_dump(const char *outDir) {
         }
     }
     LOGI("write dump file");
-    // 依次尝试：应用私有 files 目录 → 应用私有数据目录 → 外部存储的应用专属目录。
-    // 很多游戏的数据目录下并没有 files 子目录，原来的代码会静默写入失败。
-    std::vector<std::string> candidates;
-    candidates.emplace_back(std::string(outDir) + "/files/dump.cs");
-    candidates.emplace_back(std::string(outDir) + "/dump.cs");
-    auto pkg = std::string(outDir);
-    auto slash = pkg.rfind('/');
-    if (slash != std::string::npos && slash + 1 < pkg.size()) {
-        pkg = pkg.substr(slash + 1);
-        candidates.emplace_back("/sdcard/Android/data/" + pkg + "/files/dump.cs");
+    auto outPath = dumpDir + "/dump.cs";
+    if (write_dump_file(outPath, imageOutput.str(), outPuts)) {
+        LOGI("dump done! %s", outPath.c_str());
+    } else {
+        LOGE("dump failed: %s", outPath.c_str());
     }
-    for (const auto &path: candidates) {
-        if (write_dump_file(path, imageOutput.str(), outPuts)) {
-            LOGI("dump done! %s", path.c_str());
-            return;
-        }
-        LOGW("try next output path...");
-    }
-    LOGE("dump failed: no writable output path");
 }
