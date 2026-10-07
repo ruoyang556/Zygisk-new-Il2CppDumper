@@ -379,9 +379,10 @@ void il2cpp_dump(const char *outDir) {
         LOGE("no writable output dir, abort");
         return;
     }
-    // 先把内存里的 so 与 metadata 落地：即使后面 dump.cs 失败，这两个文件也已经拿到了
+    // 阶段 1/3：内存里的 libil2cpp.so
+    LOGI("stage 1/3: dump libil2cpp.so");
     dump_libil2cpp(dumpDir + "/libil2cpp.so");
-    dump_global_metadata(dumpDir + "/global-metadata.dat");
+
     size_t size;
     auto domain = il2cpp_domain_get();
     auto assemblies = il2cpp_domain_get_assemblies(domain, &size);
@@ -460,4 +461,33 @@ void il2cpp_dump(const char *outDir) {
     } else {
         LOGE("dump failed: %s", outPath.c_str());
     }
+
+    // 阶段 3/3：global-metadata.dat
+    // 放在最后执行：即使这一步出问题（内存扫描最复杂），dump.cs 与 libil2cpp.so 也已经拿到
+    LOGI("stage 3/3: dump global-metadata.dat");
+    std::vector<uintptr_t> hints;
+    for (int i = 0; i < size && hints.size() < 8; ++i) {
+        auto image = il2cpp_assembly_get_image(assemblies[i]);
+        if (!image || !il2cpp_image_get_class || !il2cpp_image_get_class_count) {
+            continue;
+        }
+        auto classCount = il2cpp_image_get_class_count(image);
+        for (int j = 0; j < classCount && hints.size() < 8; ++j) {
+            auto klass = il2cpp_image_get_class(image, j);
+            if (!klass) {
+                continue;
+            }
+            auto name = il2cpp_class_get_name(const_cast<Il2CppClass *>(klass));
+            auto ns = il2cpp_class_get_namespace(const_cast<Il2CppClass *>(klass));
+            if (name) {
+                hints.push_back(reinterpret_cast<uintptr_t>(name));
+            }
+            if (ns) {
+                hints.push_back(reinterpret_cast<uintptr_t>(ns));
+            }
+        }
+    }
+    LOGI("metadata hints: %zu", hints.size());
+    dump_global_metadata(dumpDir + "/global-metadata.dat", hints);
+    LOGI("all stages done");
 }
