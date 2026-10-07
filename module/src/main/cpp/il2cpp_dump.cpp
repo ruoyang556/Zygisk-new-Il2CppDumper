@@ -17,6 +17,7 @@
 #include "xdl.h"
 #include "log.h"
 #include "mem_dump.h"
+#include "audit_hook.h"
 #include "il2cpp-tabledefs.h"
 #include "il2cpp-class.h"
 
@@ -383,6 +384,7 @@ void il2cpp_dump(const char *outDir) {
     LOGI("stage 1/3: dump libil2cpp.so");
     DumpInfo dumpInfo{};
     dump_libil2cpp(dumpDir + "/libil2cpp.so", &dumpInfo);
+    install_audit_hooks(dumpInfo.soBase);
 
     size_t size;
     auto domain = il2cpp_domain_get();
